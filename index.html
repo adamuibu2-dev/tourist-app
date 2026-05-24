@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>観光名所ガイド</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🗺️ 観光名所ガイド</h1>
+            <div class="mode-switch">
+                <label class="switch">
+                    <input type="checkbox" id="modeToggle">
+                    <span class="slider"></span>
+                </label>
+                <span id="modeText">🚗 走行中</span>
+            </div>
+        </header>
+
+        <main>
+            <!-- 現在地情報 -->
+            <div class="location-info">
+                <h2>📍 現在地</h2>
+                <p id="locationText">位置情報を取得中...</p>
+                <button id="refreshBtn" class="btn-refresh">🔄 位置情報を更新</button>
+            </div>
+
+            <!-- 近くの観光名所 -->
+            <div class="attractions-section">
+                <h2>⭐ 近くの観光名所</h2>
+                <div id="attractionsList" class="attractions-list">
+                    <p class="loading">読み込み中...</p>
+                </div>
+            </div>
+
+            <!-- 観光名所の詳細 -->
+            <div id="detailModal" class="modal">
+                <div class="modal-content">
+                    <span class="close">&times;</span>
+                    <div id="detailContent"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
