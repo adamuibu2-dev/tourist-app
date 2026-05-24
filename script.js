@@ -1,60 +1,26 @@
-// Google Places Serviceの初期化
-let service;
-let placesData = [];
-
-// サンプル観光名所データ
-const touristSpots = [
-    {
-        id: 1,
-        name: 'スカイツリー',
-        lat: 35.7101,
-        lng: 139.8107,
-        distance: 2.5,
-        rating: 4.5,
-        reviews: 3452,
-        category: 'タワー・展望台',
-        description: '高さ634mの電波塔。展望台からは東京全体を見渡せます。',
-        hours: '08:00 - 22:00',
-        phone: '03-xxxx-xxxx',
-        source: 'manual'
-    },
-    {
-        id: 2,
-        name: '浅草寺',
-        lat: 35.7148,
-        lng: 139.7967,
-        distance: 3.1,
-        rating: 4.4,
-        reviews: 5821,
-        category: '寺院',
-        description: '東京で最古の寺院。雷門が有名です。',
-        hours: '06:00 - 17:00',
-        phone: '03-xxxx-xxxx',
-        source: 'manual'
-    },
-    {
-        id: 3,
-        name: '国立科学博物館',
-        lat: 35.7188,
-        lng: 139.7694,
-        distance: 4.2,
-        rating: 4.3,
-        reviews: 2134,
-        category: '博物館',
-        description: '日本最大級の科学博物館。恐竜の骨格標本が見どころ。',
-        hours: '09:00 - 17:00',
-        phone: '03-xxxx-xxxx',
-        source: 'manual'
-    }
-];
+// Google Places Serviceのセットアップ
+let placesService = null;
+let map = null;
 
 let currentMode = 'driving'; // 'driving' or 'walking'
 let currentLat = 35.6762;
 let currentLng = 139.6503;
-let currentHeading = 0;
+let currentHeading = 0; // 方向（度数法）
 let currentFilteredSpots = [];
-let announcedSpots = new Set();
-let approachedSpots = new Set();
+let announcedSpots = new Set(); // 既に読み上げたスポット
+let approachedSpots = new Set(); // 接近時に読み上げたスポット
+
+// 検索カテゴリ
+const PLACE_TYPES = [
+    'cafe',
+    'restaurant',
+    'park',
+    'temple',
+    'museum',
+    'train_station',
+    'library',
+    'shopping_mall'
+];
 
 // DOM要素
 const modeToggle = document.getElementById('modeToggle');
@@ -93,10 +59,18 @@ window.addEventListener('click', (event) => {
 
 // 初期化
 function init() {
-    // Google Places Serviceの初期化
-    if (window.google && window.google.maps) {
-        service = new google.maps.places.PlacesService(document.createElement('div'));
+    // Google Maps APIの読み込み待機
+    if (typeof google !== 'undefined') {
+        const mapDiv = document.createElement('div');
+        mapDiv.style.display = 'none';
+        document.body.appendChild(mapDiv);
+        map = new google.maps.Map(mapDiv, {
+            center: { lat: currentLat, lng: currentLng },
+            zoom: 15
+        });
+        placesService = new google.maps.places.PlacesService(map);
     }
+    
     getLocation();
     startHeadingTracking();
 }
@@ -109,14 +83,12 @@ function getLocation() {
                 currentLat = position.coords.latitude;
                 currentLng = position.coords.longitude;
                 updateLocationDisplay();
-                searchNearbyPlaces(); // Google Places APIで検索
-                filterAndDisplayAttractions();
+                searchNearbyPlaces();
             },
             (error) => {
                 console.error('位置情報取得エラー:', error);
-                locationText.textContent = 'デフォルト位置���使用しています（東京駅付近）';
+                locationText.textContent = 'デフォルト位置を使用しています（東京駅付近）';
                 searchNearbyPlaces();
-                filterAndDisplayAttractions();
             }
         );
     } else {
@@ -124,73 +96,61 @@ function getLocation() {
     }
 }
 
-// 周辺スポットをGoogle Places APIで検索
+// 周辺スポットを検索
 function searchNearbyPlaces() {
-    if (!service) return;
+    if (!placesService) {
+        console.error('Places Service not initialized');
+        return;
+    }
 
     searchStatus.style.display = 'block';
     searchStatusText.textContent = '📡 周辺スポットを検索中...';
+    attractionsList.innerHTML = '<p class="loading">検索中...</p>';
 
-    const maxDistance = currentMode === 'driving' ? 10000 : 2000; // メートル
+    const searchPromises = [];
 
-    // 複数の検索リクエスト
-    const searchTypes = [
-        { type: 'cafe', name: 'カフェ' },
-        { type: 'restaurant', name: 'レストラン' },
-        { type: 'park', name: '公園' },
-        { type: 'temple', name: '寺院' },
-        { type: 'museum', name: '博物館' },
-        { type: 'train_station', name: '駅' },
-        { type: 'library', name: '図書館' },
-        { type: 'shopping_mall', name: 'ショッピングモール' }
-    ];
+    // 各カテゴリで検索
+    PLACE_TYPES.forEach(type => {
+        const promise = new Promise((resolve) => {
+            const request = {
+                location: { lat: currentLat, lng: currentLng },
+                radius: currentMode === 'driving' ? 10000 : 2000, // メートル単位
+                type: type,
+                language: 'ja'
+            };
 
-    let completedRequests = 0;
+            placesService.nearbySearch(request, (results, status) => {
+                if (status === google.maps.places.PlacesServiceStatus.OK) {
+                    resolve(results || []);
+                } else {
+                    console.log(`Search for ${type} returned status: ${status}`);
+                    resolve([]);
+                }
+            });
+        });
+        searchPromises.push(promise);
+    });
 
-    searchTypes.forEach(typeObj => {
-        const request = {
-            location: new google.maps.LatLng(currentLat, currentLng),
-            radius: maxDistance,
-            type: typeObj.type
-        };
+    Promise.all(searchPromises).then((allResults) => {
+        // 結果を統合してフィルタリング
+        let allPlaces = [];
+        allResults.forEach(results => {
+            allPlaces = allPlaces.concat(results);
+        });
 
-        service.nearbySearch(request, (results, status) => {
-            if (status === google.maps.places.PlacesServiceStatus.OK) {
-                results.forEach(place => {
-                    if (place.geometry && place.geometry.location) {
-                        const distance = calculateDistance(
-                            currentLat, currentLng,
-                            place.geometry.location.lat(),
-                            place.geometry.location.lng()
-                        );
-
-                        // 既に存在するかチェック
-                        const exists = placesData.some(p => p.place_id === place.place_id);
-                        if (!exists) {
-                            placesData.push({
-                                place_id: place.place_id,
-                                name: place.name,
-                                lat: place.geometry.location.lat(),
-                                lng: place.geometry.location.lng(),
-                                rating: place.rating || 3.5,
-                                reviews: place.user_ratings_total || 0,
-                                category: typeObj.name,
-                                description: `${typeObj.name}のスポット。`,
-                                hours: place.opening_hours ? (place.opening_hours.open_now ? '営業中' : '営業終了') : '営業時間不明',
-                                phone: place.formatted_phone_number || '電話番号不明',
-                                source: 'google_places'
-                            });
-                        }
-                    }
-                });
-            }
-
-            completedRequests++;
-            if (completedRequests === searchTypes.length) {
-                searchStatus.style.display = 'none';
-                filterAndDisplayAttractions();
+        // 重複を削除
+        const uniquePlaces = [];
+        const seenIds = new Set();
+        allPlaces.forEach(place => {
+            if (!seenIds.has(place.place_id)) {
+                seenIds.add(place.place_id);
+                uniquePlaces.push(place);
             }
         });
+
+        currentFilteredSpots = uniquePlaces;
+        searchStatus.style.display = 'none';
+        filterAndDisplayAttractions();
     });
 }
 
@@ -198,7 +158,7 @@ function searchNearbyPlaces() {
 function startHeadingTracking() {
     if (window.DeviceOrientationEvent) {
         window.addEventListener('deviceorientationabsolute', (event) => {
-            currentHeading = event.alpha;
+            currentHeading = event.alpha; // 0-360度
             filterAndDisplayAttractions();
         }, true);
     }
@@ -216,7 +176,7 @@ function updateModeText() {
 
 // 距離を計算（Haversine公式）
 function calculateDistance(lat1, lng1, lat2, lng2) {
-    const R = 6371;
+    const R = 6371; // 地球の半径（km）
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLng = (lng2 - lng1) * Math.PI / 180;
     const a = 
@@ -227,7 +187,7 @@ function calculateDistance(lat1, lng1, lat2, lng2) {
     return R * c;
 }
 
-// 角度を計算
+// 角度を計算（現在地からスポットへの方向）
 function calculateBearing(lat1, lng1, lat2, lng2) {
     const dLng = (lng2 - lng1) * Math.PI / 180;
     const y = Math.sin(dLng) * Math.cos(lat2 * Math.PI / 180);
@@ -238,9 +198,9 @@ function calculateBearing(lat1, lng1, lat2, lng2) {
     return bearing;
 }
 
-// 前方にあるか判定
+// 前方にあるか判定（±90度範囲）
 function isInFrontDirection(bearing) {
-    const headingRange = 90;
+    const headingRange = 90; // ±90度
     let diff = Math.abs(currentHeading - bearing);
     if (diff > 180) {
         diff = 360 - diff;
@@ -260,20 +220,20 @@ function speak(text) {
 
 // 観光名所をフィルタリングして表示
 function filterAndDisplayAttractions() {
-    const maxDistance = currentMode === 'driving' ? 10 : 2;
+    const maxDistance = currentMode === 'driving' ? 10 : 2; // kmで指定
     
-    // 全データ（マニュアル + Google Places）を統合
-    const allSpots = [...touristSpots, ...placesData];
-    
-    let filteredSpots = allSpots
+    // 距離を計算してソート
+    let filteredSpots = currentFilteredSpots
         .map(spot => {
             const distance = calculateDistance(
                 currentLat, currentLng,
-                spot.lat, spot.lng
+                spot.geometry.location.lat(),
+                spot.geometry.location.lng()
             );
             const bearing = calculateBearing(
                 currentLat, currentLng,
-                spot.lat, spot.lng
+                spot.geometry.location.lat(),
+                spot.geometry.location.lng()
             );
             const inFront = isInFrontDirection(bearing);
             return { 
@@ -285,29 +245,32 @@ function filterAndDisplayAttractions() {
         })
         .filter(spot => spot.actualDistance <= maxDistance);
 
+    // 走行モード時は前方にあるものだけ
     if (currentMode === 'driving') {
         filteredSpots = filteredSpots.filter(spot => spot.inFront);
     }
 
+    // 距離順にソート
     filteredSpots.sort((a, b) => a.actualDistance - b.actualDistance);
 
-    currentFilteredSpots = filteredSpots;
-
+    // 音声お知らせ処理
     if (currentMode === 'driving') {
-        handleVoiceAnnouncements();
+        handleVoiceAnnouncements(filteredSpots);
     }
 
+    // TOP3のみ表示
     const top3Spots = filteredSpots.slice(0, 3);
     displayAttractions(top3Spots);
 }
 
 // 音声お知らせ処理
-function handleVoiceAnnouncements() {
-    currentFilteredSpots.forEach(spot => {
-        const spotKey = spot.place_id || spot.id;
+function handleVoiceAnnouncements(spots) {
+    spots.forEach(spot => {
+        const spotKey = spot.place_id;
         const distanceInMeters = spot.actualDistance * 1000;
 
-        if (!announcedSpots.has(spotKey) && spot.actualDistance <= 5) {
+        // ① 観光スポット発見時（初回のみ）
+        if (!announcedSpots.has(spotKey) && spot.actualDistance <= 5) { // 5km以内
             const distanceText = distanceInMeters < 1000 
                 ? `${Math.round(distanceInMeters)}メートル`
                 : `${spot.actualDistance.toFixed(1)}キロメートル`;
@@ -316,12 +279,14 @@ function handleVoiceAnnouncements() {
             announcedSpots.add(spotKey);
         }
 
+        // ③ 接近時（500m以内で1回）
         if (!approachedSpots.has(spotKey) && spot.actualDistance <= 0.5) {
             const message = `${spot.name}に接近しました`;
             speak(message);
             approachedSpots.add(spotKey);
         }
 
+        // 遠ざかったらリセット
         if (spot.actualDistance > 5) {
             announcedSpots.delete(spotKey);
             approachedSpots.delete(spotKey);
@@ -345,11 +310,14 @@ function displayAttractions(spots) {
             ? `${Math.round(spot.actualDistance * 1000)}m`
             : `${spot.actualDistance.toFixed(1)}km`;
         
+        const rating = spot.rating ? spot.rating : 'N/A';
+        const reviews = spot.user_ratings_total ? `(${spot.user_ratings_total}件)` : '';
+        
         card.innerHTML = `
             <div class="attraction-name">${spot.name}</div>
             <div class="attraction-distance">📍 ${distanceText}</div>
-            <div class="attraction-rating">⭐ ${spot.rating.toFixed(1)} (${spot.reviews}件)</div>
-            <div class="attraction-category">${spot.category}</div>
+            <div class="attraction-rating">⭐ ${rating} ${reviews}</div>
+            <div class="attraction-category">${spot.types[0] || 'その他'}</div>
         `;
         card.addEventListener('click', () => showDetail(spot));
         attractionsList.appendChild(card);
@@ -358,36 +326,34 @@ function displayAttractions(spots) {
 
 // 詳細情報を表示
 function showDetail(spot) {
-    const starsHtml = '⭐'.repeat(Math.floor(spot.rating));
+    const starsHtml = spot.rating ? '⭐'.repeat(Math.floor(spot.rating)) : 'N/A';
+    const isOpen = spot.opening_hours ? (spot.opening_hours.open_now ? '営業中 ✅' : '営業時間外 ❌') : '営業時間未取得';
+    const address = spot.vicinity || '住所未取得';
     
     detailContent.innerHTML = `
         <h3>${spot.name}</h3>
         <div class="detail-item">
-            <div class="detail-label">説明</div>
-            <div class="detail-value">${spot.description}</div>
+            <div class="detail-label">営業状態</div>
+            <div class="detail-value">${isOpen}</div>
         </div>
         <div class="detail-item">
             <div class="detail-label">評価</div>
-            <div class="detail-value">${starsHtml} ${spot.rating.toFixed(1)} (${spot.reviews}件のレビュー)</div>
+            <div class="detail-value">${starsHtml} ${spot.rating || 'N/A'} ${spot.user_ratings_total ? `(${spot.user_ratings_total}件)` : ''}</div>
         </div>
         <div class="detail-item">
             <div class="detail-label">距離</div>
             <div class="detail-value">${spot.actualDistance.toFixed(2)}km</div>
         </div>
         <div class="detail-item">
-            <div class="detail-label">カテゴリ</div>
-            <div class="detail-value">${spot.category}</div>
-        </div>
-        <div class="detail-item">
-            <div class="detail-label">営業状態</div>
-            <div class="detail-value">${spot.hours}</div>
+            <div class="detail-label">住所</div>
+            <div class="detail-value">${address}</div>
         </div>
         <div class="detail-item">
             <div class="detail-label">電話番号</div>
-            <div class="detail-value">${spot.phone}</div>
+            <div class="detail-value">${spot.formatted_phone_number || '電話番号未取得'}</div>
         </div>
         <div class="modal-buttons">
-            <button class="btn-maps" onclick="openGoogleMaps(${spot.lat}, ${spot.lng}, '${spot.name.replace(/'/g, "\\'")}')">
+            <button class="btn-maps" onclick="openGoogleMaps(${spot.geometry.location.lat()}, ${spot.geometry.location.lng()}, '${spot.name.replace(/'/g, "\\'")}')">
                 🗺️ Google Mapsで開く
             </button>
         </div>
@@ -397,9 +363,11 @@ function showDetail(spot) {
 
 // Google Mapsを開く
 function openGoogleMaps(lat, lng, name) {
-    const mapsUrl = `https://www.google.com/maps/search/${encodeURIComponent(name)}/@${lat},${lng},15z`;
+    const mapsUrl = `https://www.google.com/maps/search/${name}/@${lat},${lng},15z`;
     window.open(mapsUrl, '_blank');
 }
 
-// アプリを初期化
-init();
+// アプリを初期化（APIロード後）
+window.addEventListener('load', () => {
+    init();
+});
