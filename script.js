@@ -60,7 +60,7 @@ window.addEventListener('click', (event) => {
 // 初期化
 function init() {
     // Google Maps APIの読み込み待機
-    if (typeof google !== 'undefined') {
+    if (typeof google !== 'undefined' && google.maps) {
         const mapDiv = document.createElement('div');
         mapDiv.style.display = 'none';
         document.body.appendChild(mapDiv);
@@ -107,50 +107,40 @@ function searchNearbyPlaces() {
     searchStatusText.textContent = '📡 周辺スポットを検索中...';
     attractionsList.innerHTML = '<p class="loading">検索中...</p>';
 
-    const searchPromises = [];
+    const allPlaces = [];
+    let completedRequests = 0;
 
     // 各カテゴリで検索
     PLACE_TYPES.forEach(type => {
-        const promise = new Promise((resolve) => {
-            const request = {
-                location: { lat: currentLat, lng: currentLng },
-                radius: currentMode === 'driving' ? 10000 : 2000, // メートル単位
-                type: type,
-                language: 'ja'
-            };
+        const request = {
+            location: { lat: currentLat, lng: currentLng },
+            radius: currentMode === 'driving' ? 10000 : 2000, // メートル単位
+            type: type,
+            language: 'ja'
+        };
 
-            placesService.nearbySearch(request, (results, status) => {
-                if (status === google.maps.places.PlacesServiceStatus.OK) {
-                    resolve(results || []);
-                } else {
-                    console.log(`Search for ${type} returned status: ${status}`);
-                    resolve([]);
-                }
-            });
-        });
-        searchPromises.push(promise);
-    });
+        placesService.nearbySearch(request, (results, status) => {
+            if (status === google.maps.places.PlacesServiceStatus.OK && results) {
+                allPlaces.push(...results);
+            }
 
-    Promise.all(searchPromises).then((allResults) => {
-        // 結果を統合してフィルタリング
-        let allPlaces = [];
-        allResults.forEach(results => {
-            allPlaces = allPlaces.concat(results);
-        });
+            completedRequests++;
+            if (completedRequests === PLACE_TYPES.length) {
+                // 重複を削除
+                const uniquePlaces = [];
+                const seenIds = new Set();
+                allPlaces.forEach(place => {
+                    if (!seenIds.has(place.place_id)) {
+                        seenIds.add(place.place_id);
+                        uniquePlaces.push(place);
+                    }
+                });
 
-        // 重複を削除
-        const uniquePlaces = [];
-        const seenIds = new Set();
-        allPlaces.forEach(place => {
-            if (!seenIds.has(place.place_id)) {
-                seenIds.add(place.place_id);
-                uniquePlaces.push(place);
+                currentFilteredSpots = uniquePlaces;
+                searchStatus.style.display = 'none';
+                filterAndDisplayAttractions();
             }
         });
-
-        currentFilteredSpots = uniquePlaces;
-        searchStatus.style.display = 'none';
-        filterAndDisplayAttractions();
     });
 }
 
@@ -211,6 +201,8 @@ function isInFrontDirection(bearing) {
 // 音声で読み上げ
 function speak(text) {
     if ('speechSynthesis' in window) {
+        // 前の読み上げをキャンセル
+        speechSynthesis.cancel();
         const utterance = new SpeechSynthesisUtterance(text);
         utterance.lang = 'ja-JP';
         utterance.rate = 1.0;
@@ -310,14 +302,14 @@ function displayAttractions(spots) {
             ? `${Math.round(spot.actualDistance * 1000)}m`
             : `${spot.actualDistance.toFixed(1)}km`;
         
-        const rating = spot.rating ? spot.rating : 'N/A';
+        const rating = spot.rating ? spot.rating.toFixed(1) : 'N/A';
         const reviews = spot.user_ratings_total ? `(${spot.user_ratings_total}件)` : '';
         
         card.innerHTML = `
             <div class="attraction-name">${spot.name}</div>
             <div class="attraction-distance">📍 ${distanceText}</div>
             <div class="attraction-rating">⭐ ${rating} ${reviews}</div>
-            <div class="attraction-category">${spot.types[0] || 'その他'}</div>
+            <div class="attraction-category">${spot.types ? spot.types[0] : 'その他'}</div>
         `;
         card.addEventListener('click', () => showDetail(spot));
         attractionsList.appendChild(card);
@@ -329,6 +321,8 @@ function showDetail(spot) {
     const starsHtml = spot.rating ? '⭐'.repeat(Math.floor(spot.rating)) : 'N/A';
     const isOpen = spot.opening_hours ? (spot.opening_hours.open_now ? '営業中 ✅' : '営業時間外 ❌') : '営業時間未取得';
     const address = spot.vicinity || '住所未取得';
+    const rating = spot.rating ? spot.rating.toFixed(1) : 'N/A';
+    const reviews = spot.user_ratings_total ? `(${spot.user_ratings_total}件)` : '';
     
     detailContent.innerHTML = `
         <h3>${spot.name}</h3>
@@ -338,7 +332,7 @@ function showDetail(spot) {
         </div>
         <div class="detail-item">
             <div class="detail-label">評価</div>
-            <div class="detail-value">${starsHtml} ${spot.rating || 'N/A'} ${spot.user_ratings_total ? `(${spot.user_ratings_total}件)` : ''}</div>
+            <div class="detail-value">${starsHtml} ${rating} ${reviews}</div>
         </div>
         <div class="detail-item">
             <div class="detail-label">距離</div>
@@ -363,7 +357,7 @@ function showDetail(spot) {
 
 // Google Mapsを開く
 function openGoogleMaps(lat, lng, name) {
-    const mapsUrl = `https://www.google.com/maps/search/${name}/@${lat},${lng},15z`;
+    const mapsUrl = `https://www.google.com/maps/search/${encodeURIComponent(name)}/@${lat},${lng},15z`;
     window.open(mapsUrl, '_blank');
 }
 
