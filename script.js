@@ -103,13 +103,42 @@ const touristSpots = [
         description: '現代アートを中心とした美術館。',
         hours: '10:00 - 22:00',
         phone: '03-xxxx-xxxx'
+    },
+    {
+        id: 9,
+        name: '東京タワー',
+        lat: 35.6586,
+        lng: 139.7454,
+        distance: 7.8,
+        rating: 4.3,
+        reviews: 4321,
+        category: 'タワー・展望台',
+        description: '赤い鉄塔。夜間ライトアップが美しいです。',
+        hours: '09:00 - 23:00',
+        phone: '03-xxxx-xxxx'
+    },
+    {
+        id: 10,
+        name: '国会議事堂',
+        lat: 35.6762,
+        lng: 139.7394,
+        distance: 6.2,
+        rating: 4.0,
+        reviews: 1234,
+        category: '建築物',
+        description: '日本の政治中枢。見学ツアーが��ります。',
+        hours: '09:00 - 16:00（土日祝休）',
+        phone: '03-xxxx-xxxx'
     }
 ];
 
 let currentMode = 'driving'; // 'driving' or 'walking'
 let currentLat = 35.6762;
 let currentLng = 139.6503;
+let currentHeading = 0; // 方向（度数法）
 let currentFilteredSpots = [];
+let announcedSpots = new Set(); // 既に読み上げたスポット
+let approachedSpots = new Set(); // 接近時に読み上げたスポット
 
 // DOM要素
 const modeToggle = document.getElementById('modeToggle');
@@ -125,6 +154,8 @@ const closeBtn = document.querySelector('.close');
 modeToggle.addEventListener('change', () => {
     currentMode = modeToggle.checked ? 'walking' : 'driving';
     updateModeText();
+    announcedSpots.clear();
+    approachedSpots.clear();
     filterAndDisplayAttractions();
 });
 
@@ -145,6 +176,7 @@ window.addEventListener('click', (event) => {
 // 初期化
 function init() {
     getLocation();
+    startHeadingTracking();
 }
 
 // 位置情報を取得
@@ -159,13 +191,22 @@ function getLocation() {
             },
             (error) => {
                 console.error('位置情報取得エラー:', error);
-                // デフォルト位置を使用（東京駅付近）
                 locationText.textContent = 'デフォルト位置を使用しています（東京駅付近）';
                 filterAndDisplayAttractions();
             }
         );
     } else {
         locationText.textContent = '位置情報機能がサポートされていません';
+    }
+}
+
+// 方向追跡を開始
+function startHeadingTracking() {
+    if (window.DeviceOrientationEvent) {
+        window.addEventListener('deviceorientationabsolute', (event) => {
+            currentHeading = event.alpha; // 0-360度
+            filterAndDisplayAttractions();
+        }, true);
     }
 }
 
@@ -192,40 +233,132 @@ function calculateDistance(lat1, lng1, lat2, lng2) {
     return R * c;
 }
 
+// 角度を計算（現在地からスポットへの方向）
+function calculateBearing(lat1, lng1, lat2, lng2) {
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const y = Math.sin(dLng) * Math.cos(lat2 * Math.PI / 180);
+    const x = Math.cos(lat1 * Math.PI / 180) * Math.sin(lat2 * Math.PI / 180) -
+              Math.sin(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.cos(dLng);
+    let bearing = Math.atan2(y, x) * 180 / Math.PI;
+    bearing = (bearing + 360) % 360;
+    return bearing;
+}
+
+// 前方にあるか判定（±90度範囲）
+function isInFrontDirection(bearing) {
+    const headingRange = 90; // ±90度
+    let diff = Math.abs(currentHeading - bearing);
+    if (diff > 180) {
+        diff = 360 - diff;
+    }
+    return diff <= headingRange;
+}
+
+// 音声で読み上げ
+function speak(text) {
+    if ('speechSynthesis' in window) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = 'ja-JP';
+        utterance.rate = 1.0;
+        speechSynthesis.speak(utterance);
+    }
+}
+
 // 観光名所をフィルタリングして表示
 function filterAndDisplayAttractions() {
-    const maxDistance = currentMode === 'driving' ? 15 : 2; // kmで指定
+    const maxDistance = currentMode === 'driving' ? 10 : 2; // kmで指定
     
     // 距離を計算してソート
-    currentFilteredSpots = touristSpots
+    let filteredSpots = touristSpots
         .map(spot => {
             const distance = calculateDistance(
                 currentLat, currentLng,
                 spot.lat, spot.lng
             );
-            return { ...spot, actualDistance: distance };
+            const bearing = calculateBearing(
+                currentLat, currentLng,
+                spot.lat, spot.lng
+            );
+            const inFront = isInFrontDirection(bearing);
+            return { 
+                ...spot, 
+                actualDistance: distance,
+                bearing: bearing,
+                inFront: inFront
+            };
         })
-        .filter(spot => spot.actualDistance <= maxDistance)
-        .sort((a, b) => a.actualDistance - b.actualDistance);
+        .filter(spot => spot.actualDistance <= maxDistance);
 
-    displayAttractions();
+    // 走行モード時は前方にあるものだけ
+    if (currentMode === 'driving') {
+        filteredSpots = filteredSpots.filter(spot => spot.inFront);
+    }
+
+    // 距離順にソート
+    filteredSpots.sort((a, b) => a.actualDistance - b.actualDistance);
+
+    currentFilteredSpots = filteredSpots;
+
+    // 音声お知らせ処理
+    if (currentMode === 'driving') {
+        handleVoiceAnnouncements();
+    }
+
+    // TOP3のみ表示
+    const top3Spots = filteredSpots.slice(0, 3);
+    displayAttractions(top3Spots);
+}
+
+// 音声お知らせ処理
+function handleVoiceAnnouncements() {
+    currentFilteredSpots.forEach(spot => {
+        const spotKey = spot.id;
+        const distanceInMeters = spot.actualDistance * 1000;
+
+        // ① 観光スポット発見時（初回のみ）
+        if (!announcedSpots.has(spotKey) && spot.actualDistance <= 5) { // 5km以内
+            const distanceText = distanceInMeters < 1000 
+                ? `${Math.round(distanceInMeters)}メートル`
+                : `${spot.actualDistance.toFixed(1)}キロメートル`;
+            const message = `${spot.name}が${distanceText}先にあります`;
+            speak(message);
+            announcedSpots.add(spotKey);
+        }
+
+        // ③ 接近時（500m以内で1回）
+        if (!approachedSpots.has(spotKey) && spot.actualDistance <= 0.5) {
+            const message = `${spot.name}に接近しました`;
+            speak(message);
+            approachedSpots.add(spotKey);
+        }
+
+        // 遠ざかったらリセット
+        if (spot.actualDistance > 5) {
+            announcedSpots.delete(spotKey);
+            approachedSpots.delete(spotKey);
+        }
+    });
 }
 
 // 観光名所を表示
-function displayAttractions() {
+function displayAttractions(spots) {
     attractionsList.innerHTML = '';
 
-    if (currentFilteredSpots.length === 0) {
+    if (spots.length === 0) {
         attractionsList.innerHTML = '<p class="loading">近くに観光名所がありません</p>';
         return;
     }
 
-    currentFilteredSpots.forEach(spot => {
+    spots.forEach(spot => {
         const card = document.createElement('div');
         card.className = 'attraction-card';
+        const distanceText = spot.actualDistance < 1 
+            ? `${Math.round(spot.actualDistance * 1000)}m`
+            : `${spot.actualDistance.toFixed(1)}km`;
+        
         card.innerHTML = `
             <div class="attraction-name">${spot.name}</div>
-            <div class="attraction-distance">📍 ${spot.actualDistance.toFixed(1)}km</div>
+            <div class="attraction-distance">📍 ${distanceText}</div>
             <div class="attraction-rating">⭐ ${spot.rating} (${spot.reviews}件)</div>
             <div class="attraction-category">${spot.category}</div>
         `;
