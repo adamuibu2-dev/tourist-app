@@ -131,6 +131,16 @@ main {
     transform: scale(0.98);
 }
 
+.search-status {
+    background: #e3f2fd;
+    padding: 12px;
+    border-radius: 8px;
+    margin-bottom: 15px;
+    text-align: center;
+    color: #1976d2;
+    font-size: 13px;
+}
+
 .attractions-section h2 {
     color: #333;
     font-size: 18px;
